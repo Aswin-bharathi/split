@@ -97,6 +97,16 @@ export const formatPeriodLabel = (mode: PeriodMode, anchor: Date) => {
   return `${startText} – ${endText}`;
 };
 
+export const formatDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+export const getPeriodKey = (mode: PeriodMode, start: Date, end: Date) =>
+  `${mode}:${formatDateKey(start)}:${formatDateKey(end)}`;
+
 export const isDateInPeriod = (dateStr: string, start: Date, end: Date) => {
   const expenseDate = new Date(`${dateStr}T12:00:00`);
   return expenseDate >= start && expenseDate <= end;

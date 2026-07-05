@@ -71,6 +71,16 @@ export type Settlement = {
   to: string;
   amount: number;
   status?: 'pending' | 'settled' | 'partial';
+  periodKey?: string;
+};
+
+export type SettlementRecord = {
+  groupId: string;
+  from: string;
+  to: string;
+  amount: number;
+  periodKey: string;
+  status: 'partial' | 'settled';
 };
 
 export type ActivityLog = {

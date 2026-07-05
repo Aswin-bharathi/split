@@ -9,5 +9,5 @@
     "outDir": "dist-server",
     "rootDir": "."
   },
-  "include": ["server/**/*.ts"]
+  "include": ["server/**/*.ts", "api/**/*.ts"]
 }

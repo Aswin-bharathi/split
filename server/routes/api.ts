@@ -33,12 +33,22 @@ apiRouter.get('/bootstrap', requireAuth, async (req, res) => {
     ]);
 
     const settledSettlementKeys = settlementRecords
-      .filter((record) => record.status === 'settled')
-      .map((record) => `${record.from}-${record.to}`);
+      .filter((record) => record.status === 'settled' && record.periodKey)
+      .map((record) => `${record.periodKey}:${record.from}-${record.to}`);
 
     const partialSettlements = settlementRecords
-      .filter((record) => record.status === 'partial')
-      .map((record) => ({ from: record.from, to: record.to, amount: record.amount }));
+      .filter((record) => record.status === 'partial' && record.periodKey)
+      .map((record) => ({ from: record.from, to: record.to, amount: record.amount, periodKey: record.periodKey! }));
+    const scopedSettlementRecords = settlementRecords
+      .filter((record) => record.periodKey)
+      .map((record) => ({
+        from: record.from,
+        to: record.to,
+        amount: record.amount,
+        groupId: record.groupId,
+        periodKey: record.periodKey!,
+        status: record.status
+      }));
 
     const expenseCategories = categories.filter((c) => c.type === 'expense').map((c) => c.name);
     const incomeCategories = categories.filter((c) => c.type === 'income').map((c) => c.name);
@@ -53,6 +63,7 @@ apiRouter.get('/bootstrap', requireAuth, async (req, res) => {
       expenses,
       settledSettlementKeys,
       partialSettlements,
+      settlementRecords: scopedSettlementRecords,
       activityLogs,
       notifications,
       expenseCategories,
@@ -279,15 +290,24 @@ apiRouter.delete('/expenses/:expenseId', requireAdmin, async (req, res) => {
 
 apiRouter.post('/settlements/settle', requireAuth, async (req, res) => {
   try {
-    const { groupId, from, to } = req.body;
+    const { groupId, from, to, amount, periodKey } = req.body;
+    if (!periodKey) {
+      res.status(400).json({ error: 'Settlement period is required.' });
+      return;
+    }
+    if (!amount || amount <= 0) {
+      res.status(400).json({ error: 'Settlement amount is required.' });
+      return;
+    }
     const currentUserId = getSessionUserId(req)!;
     const record = {
       id: randomUUID(),
       groupId,
       from,
       to,
-      amount: 0,
+      amount,
       status: 'settled' as const,
+      periodKey,
       createdAt: now()
     };
     await SettlementRecord.create(record);
@@ -295,7 +315,7 @@ apiRouter.post('/settlements/settle', requireAuth, async (req, res) => {
       id: randomUUID(),
       groupId,
       userId: currentUserId,
-      action: `settled balance from ${from} to ${to}`,
+      action: `settled ₹${amount} from ${from} to ${to} for ${periodKey}`,
       entity: 'settlement',
       timestamp: now()
     };
@@ -309,7 +329,7 @@ apiRouter.post('/settlements/settle', requireAuth, async (req, res) => {
     };
     await ActivityLog.create(log);
     await Notification.create(notification);
-    res.json({ settledKey: `${from}-${to}`, log, notification });
+    res.json({ settledKey: `${periodKey}:${from}-${to}`, log, notification });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to settle' });
@@ -318,7 +338,11 @@ apiRouter.post('/settlements/settle', requireAuth, async (req, res) => {
 
 apiRouter.post('/settlements/partial', requireAuth, async (req, res) => {
   try {
-    const { groupId, from, to, amount } = req.body;
+    const { groupId, from, to, amount, periodKey } = req.body;
+    if (!periodKey) {
+      res.status(400).json({ error: 'Settlement period is required.' });
+      return;
+    }
     const currentUserId = getSessionUserId(req)!;
     const record = {
       id: randomUUID(),
@@ -327,6 +351,7 @@ apiRouter.post('/settlements/partial', requireAuth, async (req, res) => {
       to,
       amount,
       status: 'partial' as const,
+      periodKey,
       createdAt: now()
     };
     await SettlementRecord.create(record);
@@ -334,7 +359,7 @@ apiRouter.post('/settlements/partial', requireAuth, async (req, res) => {
       id: randomUUID(),
       groupId,
       userId: currentUserId,
-      action: `recorded partial settlement ₹${amount} from ${from} to ${to}`,
+      action: `recorded partial settlement ₹${amount} from ${from} to ${to} for ${periodKey}`,
       entity: 'settlement',
       timestamp: now()
     };
@@ -348,7 +373,7 @@ apiRouter.post('/settlements/partial', requireAuth, async (req, res) => {
     };
     await ActivityLog.create(log);
     await Notification.create(notification);
-    res.json({ partial: { from, to, amount }, log, notification });
+    res.json({ partial: { groupId, from, to, amount, periodKey, status: 'partial' }, log, notification });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to record partial settlement' });

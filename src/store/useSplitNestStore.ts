@@ -7,11 +7,13 @@ import {
   calculateExactSplit,
   calculatePercentageSplit,
   calculateQuantitySplit,
-  calculateSettlement,
   calculateWeightedSplit,
-  applyPartialSettlements
+  applySettlementRecordsToRelationships,
+  applySettlementRecordsToBalances,
+  calculateRelationshipSettlements,
+  simplifyDebts
 } from '../lib/settlements';
-import type { ActivityLog, Expense, Group, Member, MemberRole, Notification, ParticipantInput, SplitMethod } from '../lib/types';
+import type { ActivityLog, Expense, Group, Member, MemberRole, Notification, ParticipantInput, SettlementRecord, SplitMethod } from '../lib/types';
 
 type ExpenseDraft = {
   title: string;
@@ -38,7 +40,8 @@ type SplitNestState = {
   groups: Group[];
   expenses: Expense[];
   settledSettlementKeys: string[];
-  partialSettlements: { from: string; to: string; amount: number }[];
+  partialSettlements: { from: string; to: string; amount: number; periodKey: string }[];
+  settlementRecords: SettlementRecord[];
   activityLogs: ActivityLog[];
   notifications: Notification[];
   expenseCategories: string[];
@@ -54,8 +57,8 @@ type SplitNestState = {
   updateExpense: (expenseId: string, draft: ExpenseDraft) => Promise<void>;
   duplicateExpense: (expenseId: string) => Promise<void>;
   deleteExpense: (expenseId: string) => Promise<void>;
-  markSettlementSettled: (from: string, to: string) => Promise<void>;
-  markSettlementPartial: (from: string, to: string, amount: number) => Promise<void>;
+  markSettlementSettled: (from: string, to: string, amount: number, periodKey: string) => Promise<void>;
+  markSettlementPartial: (from: string, to: string, amount: number, periodKey: string) => Promise<void>;
   addCategory: (name: string, type?: 'expense' | 'income') => Promise<void>;
   clearError: () => void;
 };
@@ -82,6 +85,7 @@ export const useSplitNestStore = create<SplitNestState>((set, get) => ({
   expenses: [],
   settledSettlementKeys: [],
   partialSettlements: [],
+  settlementRecords: [],
   activityLogs: [],
   notifications: [],
   expenseCategories: [],
@@ -140,6 +144,7 @@ export const useSplitNestStore = create<SplitNestState>((set, get) => ({
         expenses: data.expenses,
         settledSettlementKeys: data.settledSettlementKeys,
         partialSettlements: data.partialSettlements,
+        settlementRecords: data.settlementRecords,
         activityLogs: data.activityLogs,
         notifications: data.notifications,
         expenseCategories: data.expenseCategories,
@@ -233,30 +238,35 @@ export const useSplitNestStore = create<SplitNestState>((set, get) => ({
     set((s) => ({ expenses: s.expenses.filter((expense) => expense.id !== expenseId) }));
   },
 
-  markSettlementSettled: async (from, to) => {
+  markSettlementSettled: async (from, to, amount, periodKey) => {
     const state = get();
     const { settledKey, log, notification } = await api.settle({
       groupId: state.activeGroupId,
       from,
-      to
+      to,
+      amount,
+      periodKey
     });
     set((s) => ({
       settledSettlementKeys: [...s.settledSettlementKeys, settledKey],
+      settlementRecords: [...s.settlementRecords, { groupId: state.activeGroupId, from, to, amount, periodKey, status: 'settled' }],
       activityLogs: [log, ...s.activityLogs],
       notifications: [notification, ...s.notifications]
     }));
   },
 
-  markSettlementPartial: async (from, to, amount) => {
+  markSettlementPartial: async (from, to, amount, periodKey) => {
     const state = get();
     const { partial, log, notification } = await api.partialSettle({
       groupId: state.activeGroupId,
       from,
       to,
-      amount
+      amount,
+      periodKey
     });
     set((s) => ({
       partialSettlements: [...s.partialSettlements, partial],
+      settlementRecords: [...s.settlementRecords, { ...partial, status: 'partial' }],
       activityLogs: [log, ...s.activityLogs],
       notifications: [notification, ...s.notifications]
     }));
@@ -292,18 +302,69 @@ export const selectBalances = (state: SplitNestState) => {
 export const selectSettlements = (state: SplitNestState) =>
   selectSettlementsForExpenses(state, selectGroupExpenses(state));
 
-export const selectSettlementsForExpenses = (state: SplitNestState, expenses: Expense[]) => {
+export const selectSettlementsForExpenses = (state: SplitNestState, expenses: Expense[], periodKey?: string) => {
   const group = selectActiveGroup(state);
   if (!group) return [];
-  const raw = calculateSettlement(expenses, group.members);
-  const afterPartials = applyPartialSettlements(raw, state.partialSettlements);
-  return afterPartials.filter(
-    (settlement) => !state.settledSettlementKeys.includes(`${settlement.from}-${settlement.to}`)
-  );
+  return simplifyDebts(selectOutstandingBalancesForExpenses(state, expenses, periodKey));
 };
+
+export const selectRelationshipSettlementsForExpenses = (state: SplitNestState, expenses: Expense[], periodKey?: string) =>
+  applySettlementRecordsToRelationships(
+    calculateRelationshipSettlements(expenses),
+    getRelevantSettlementRecords(state, periodKey)
+  );
 
 export const selectBalancesForExpenses = (expenses: Expense[], memberIds: string[]) =>
   calculateBalances(expenses, memberIds);
+
+export const selectOutstandingBalancesForExpenses = (state: SplitNestState, expenses: Expense[], periodKey?: string) => {
+  const group = selectActiveGroup(state);
+  if (!group) return [];
+  const balances = calculateBalances(expenses, group.members);
+  return applySettlementRecordsToBalances(balances, getRelevantSettlementRecords(state, periodKey));
+};
+
+const parsePeriodKey = (periodKey: string) => {
+  const [, start, end] = periodKey.split(':');
+  if (!start || !end) return null;
+  return {
+    start: new Date(`${start}T00:00:00`),
+    end: new Date(`${end}T23:59:59`)
+  };
+};
+
+const isSettlementRecordInPeriod = (recordPeriodKey: string, selectedPeriodKey: string) => {
+  const record = parsePeriodKey(recordPeriodKey);
+  const selected = parsePeriodKey(selectedPeriodKey);
+  if (!record || !selected) return recordPeriodKey === selectedPeriodKey;
+  return record.start >= selected.start && record.end <= selected.end;
+};
+
+const getRelevantSettlementRecords = (state: SplitNestState, periodKey?: string) =>
+  state.settlementRecords.flatMap((record) => {
+    const inGroup = !record.groupId || record.groupId === state.activeGroupId;
+    if (!inGroup) return [];
+    if (periodKey && !isSettlementRecordInPeriod(record.periodKey, periodKey)) return [];
+    if (record.amount > 0) return [record];
+    const inferredAmount = inferLegacySettledAmount(state, record);
+    return inferredAmount > 0 ? [{ ...record, amount: inferredAmount }] : [];
+  });
+
+const inferLegacySettledAmount = (state: SplitNestState, record: SettlementRecord) => {
+  if (record.status !== 'settled') return 0;
+  const group = selectActiveGroup(state);
+  const recordRange = parsePeriodKey(record.periodKey);
+  if (!group || !recordRange) return 0;
+  const recordExpenses = state.expenses.filter((expense) => {
+    if (expense.groupId !== state.activeGroupId) return false;
+    const expenseDate = new Date(`${expense.date}T12:00:00`);
+    return expenseDate >= recordRange.start && expenseDate <= recordRange.end;
+  });
+  const settlement = simplifyDebts(calculateBalances(recordExpenses, group.members)).find(
+    (item) => item.from === record.from && item.to === record.to
+  );
+  return settlement?.amount ?? 0;
+};
 
 export const isAdmin = (state: SplitNestState) => {
   const member = state.members.find((m) => m.id === state.currentUserId);

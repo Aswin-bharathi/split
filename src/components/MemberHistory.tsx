@@ -2,7 +2,6 @@ import { ChevronLeft, Utensils } from 'lucide-react';
 import type { Expense, Member } from '../lib/types';
 import { currency, memberName } from '../lib/utils';
 import type { PeriodMode } from '../lib/period';
-import { PERIOD_MODES } from '../lib/period';
 
 type MemberHistoryProps = {
   memberId: string;
@@ -10,8 +9,8 @@ type MemberHistoryProps = {
   expenses: Expense[];
   members: Member[];
   periodMode: PeriodMode;
+  expenseCategories: string[];
   onBack: () => void;
-  onPeriodModeChange: (mode: PeriodMode) => void;
 };
 
 const dayLabel = (date: string) =>
@@ -27,8 +26,8 @@ export function MemberHistory({
   expenses,
   members,
   periodMode,
-  onBack,
-  onPeriodModeChange
+  expenseCategories,
+  onBack
 }: MemberHistoryProps) {
   const memberExpenses = expenses.filter(
     (expense) =>
@@ -45,6 +44,15 @@ export function MemberHistory({
     (sum, e) => sum + (e.participants.find((p) => p.memberId === memberId)?.share ?? 0),
     0
   );
+  const categorySpend = expenseCategories
+    .map((category) => ({
+      category,
+      amount: memberExpenses
+        .filter((expense) => expense.category === category && expense.paidBy === memberId)
+        .reduce((sum, expense) => sum + expense.amount, 0)
+    }))
+    .filter((entry) => entry.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
 
   const grouped = memberExpenses.reduce<Record<string, Expense[]>>((acc, expense) => {
     const label = dayLabel(expense.date);
@@ -64,21 +72,9 @@ export function MemberHistory({
 
       <div className="rounded-xl border-2 border-[#b8b493] bg-[#48483f] p-4 sm:p-5">
         <h2 className="text-2xl font-bold text-[#fff9bf]">{name}&apos;s history</h2>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {PERIOD_MODES.filter((p) => p.mode === 'daily' || p.mode === 'weekly').map(({ mode, label }) => (
-            <button
-              key={mode}
-              className={`rounded-lg border-2 px-4 py-2 text-sm font-semibold transition ${
-                periodMode === mode
-                  ? 'border-[#fff27c] bg-[#fff27c]/10 text-[#fff27c]'
-                  : 'border-[#6f6d5a] text-[#d8d4b4] hover:border-[#b8b493]'
-              }`}
-              onClick={() => onPeriodModeChange(mode)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <p className="mt-1 text-sm text-[#b8b493]">
+          Showing records for the selected {periodMode} period.
+        </p>
         <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-[#b8b493]">Total paid</p>
@@ -91,9 +87,20 @@ export function MemberHistory({
         </div>
       </div>
 
+      {categorySpend.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {categorySpend.map((entry) => (
+            <div key={entry.category} className="rounded-lg border-2 border-[#8f8c72] bg-[#48483f] p-4">
+              <p className="truncate text-sm font-semibold uppercase tracking-wide text-[#b8b493]">{entry.category}</p>
+              <p className="mt-2 text-2xl font-bold text-[#ff8667]">{currency.format(entry.amount)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {memberExpenses.length === 0 && (
         <p className="rounded-lg border-2 border-[#8f8c72] p-5 text-center text-xl text-[#d8d4b4]">
-          No expenses for {name} in this {periodMode === 'daily' ? 'day' : 'week'}.
+          No expenses for {name} in this {periodMode} period.
         </p>
       )}
 

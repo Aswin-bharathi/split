@@ -3,30 +3,31 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Download,
+  FileText,
   Landmark,
   LogOut,
-  Menu,
   MoreHorizontal,
   PieChart as PieIcon,
   Plus,
   RefreshCw,
-  Search,
   Tag,
   WalletCards,
   X
 } from 'lucide-react';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { AppHeader } from './components/AppHeader';
 import { ExpenseForm } from './components/ExpenseForm';
 import { ExpenseTimeline } from './components/ExpenseTimeline';
 import { LoginScreen } from './components/LoginScreen';
 import { MemberHistory } from './components/MemberHistory';
-import { PeriodFilter } from './components/PeriodFilter';
 import { SettlementPlan } from './components/SettlementPlan';
 import { SettlementSummary } from './components/SettlementSummary';
 import { currency, memberName } from './lib/utils';
 import { nameToUsername } from './lib/username';
 import {
   formatPeriodLabel,
+  getPeriodKey,
   getDefaultAnchor,
   getPeriodRange,
   isDateInPeriod,
@@ -38,12 +39,15 @@ import {
   selectActiveGroup,
   selectBalancesForExpenses,
   selectGroupExpenses,
+  selectOutstandingBalancesForExpenses,
+  selectRelationshipSettlementsForExpenses,
   selectSettlementsForExpenses,
   useSplitNestStore
 } from './store/useSplitNestStore';
 import type { Category, Expense } from './lib/types';
 
-type Tab = 'records' | 'analysis' | 'budgets' | 'accounts' | 'categories';
+type Tab = 'records' | 'analysis' | 'budgets' | 'accounts' | 'categories' | 'reports';
+type SettlementMode = 'relationship' | 'simplified';
 
 const Analytics = lazy(() => import('./components/Analytics').then((module) => ({ default: module.Analytics })));
 
@@ -52,7 +56,8 @@ const navItems: { tab: Tab; label: string; icon: typeof ClipboardList }[] = [
   { tab: 'analysis', label: 'Analysis', icon: PieIcon },
   { tab: 'budgets', label: 'Budgets', icon: Calculator },
   { tab: 'accounts', label: 'Accounts', icon: WalletCards },
-  { tab: 'categories', label: 'Categories', icon: Tag }
+  { tab: 'categories', label: 'Categories', icon: Tag },
+  { tab: 'reports', label: 'Reports', icon: FileText }
 ];
 
 export default function App() {
@@ -76,8 +81,9 @@ export default function App() {
   const [newMemberPassword, setNewMemberPassword] = useState('');
   const [newCategoryName, setNewCategoryName] = useState('');
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
-  const [analysisPeriodMode, setAnalysisPeriodMode] = useState<PeriodMode>('weekly');
-  const [analysisPeriodAnchor, setAnalysisPeriodAnchor] = useState(() => getDefaultAnchor('weekly'));
+  const [reportType, setReportType] = useState<'group' | 'individual'>('group');
+  const [reportMemberId, setReportMemberId] = useState('');
+  const [settlementMode, setSettlementMode] = useState<SettlementMode>('relationship');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -93,6 +99,10 @@ export default function App() {
     () => getPeriodRange(periodMode, periodAnchor),
     [periodMode, periodAnchor]
   );
+  const periodKey = useMemo(
+    () => getPeriodKey(periodMode, periodStart, periodEnd),
+    [periodMode, periodStart, periodEnd]
+  );
 
   const periodExpenses = useMemo(
     () => expenses.filter((expense) => isDateInPeriod(expense.date, periodStart, periodEnd)),
@@ -100,14 +110,19 @@ export default function App() {
   );
 
   const balances = useMemo(
-    () => selectBalancesForExpenses(periodExpenses, group?.members ?? []),
-    [periodExpenses, group?.members]
+    () => selectOutstandingBalancesForExpenses(state, periodExpenses, periodKey),
+    [state, periodExpenses, periodKey]
   );
 
-  const settlements = useMemo(
-    () => selectSettlementsForExpenses(state, periodExpenses),
-    [state, periodExpenses]
+  const simplifiedSettlements = useMemo(
+    () => selectSettlementsForExpenses(state, periodExpenses, periodKey),
+    [state, periodExpenses, periodKey]
   );
+  const relationshipSettlements = useMemo(
+    () => selectRelationshipSettlementsForExpenses(state, periodExpenses, periodKey),
+    [state, periodExpenses, periodKey]
+  );
+  const settlements = settlementMode === 'relationship' ? relationshipSettlements : simplifiedSettlements;
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const visibleExpenses = useMemo(
@@ -136,11 +151,11 @@ export default function App() {
       state.expenseCategories
         .map((category) => ({
           category,
-          amount: visibleExpenses.filter((expense) => expense.category === category).reduce((sum, expense) => sum + expense.amount, 0)
+          amount: periodExpenses.filter((expense) => expense.category === category).reduce((sum, expense) => sum + expense.amount, 0)
         }))
         .filter((item) => item.amount > 0)
         .sort((a, b) => b.amount - a.amount),
-    [visibleExpenses, state.expenseCategories]
+    [periodExpenses, state.expenseCategories]
   );
 
   const groupActivityLogs = useMemo(() => {
@@ -149,18 +164,12 @@ export default function App() {
     return logs.filter((log) => log.userId === state.currentUserId);
   }, [state.activityLogs, state.currentUserId, group?.id, userIsAdmin]);
 
-  const analysisPeriodRange = useMemo(
-    () => getPeriodRange(analysisPeriodMode, analysisPeriodAnchor),
-    [analysisPeriodMode, analysisPeriodAnchor]
-  );
-
-  const analysisPeriodExpenses = useMemo(
-    () =>
-      expenses.filter((expense) =>
-        isDateInPeriod(expense.date, analysisPeriodRange.start, analysisPeriodRange.end)
-      ),
-    [expenses, analysisPeriodRange]
-  );
+  useEffect(() => {
+    if (!reportMemberId && activeMembers.length > 0) setReportMemberId(activeMembers[0].id);
+    if (reportMemberId && !activeMembers.some((member) => member.id === reportMemberId)) {
+      setReportMemberId(activeMembers[0]?.id ?? '');
+    }
+  }, [activeMembers, reportMemberId]);
 
   const runAction = useCallback(async (action: () => Promise<void>) => {
     setActionError(null);
@@ -245,12 +254,6 @@ export default function App() {
         <div className="border-b border-[#6f6d5a] px-6 py-8">
           <h1 className="font-serif text-3xl font-bold italic text-[#f5ff8f]">SplitNest</h1>
           <p className="mt-2 text-sm text-[#d8d4b4]">Shared expense manager</p>
-          {state.apiConnected && (
-            <p className="mt-3 flex items-center gap-2 text-xs text-[#86d28e]">
-              <span className="size-2 rounded-full bg-[#86d28e]" />
-              MongoDB connected
-            </p>
-          )}
           {state.currentUser && (
             <p className="mt-3 text-sm text-[#d8d4b4]">
               Signed in as <span className="font-semibold text-[#fff9bf]">{state.currentUser.name}</span>
@@ -370,19 +373,16 @@ export default function App() {
                     <MemberHistory
                       memberId={selectedMemberId}
                       memberName={memberName(state.members, selectedMemberId)}
-                      expenses={analysisPeriodExpenses}
+                      expenses={periodExpenses}
                       members={state.members}
-                      periodMode={analysisPeriodMode}
+                      periodMode={periodMode}
+                      expenseCategories={state.expenseCategories}
                       onBack={() => setSelectedMemberId(null)}
-                      onPeriodModeChange={(mode) => {
-                        setAnalysisPeriodMode(mode);
-                        setAnalysisPeriodAnchor(getDefaultAnchor(mode));
-                      }}
                     />
                   ) : (
                     <div className="space-y-7 lg:grid lg:grid-cols-2 lg:gap-8 lg:space-y-0">
                       <Suspense fallback={<p className="rounded-lg border-2 border-[#8f8c72] p-5 text-center text-xl text-[#d8d4b4]">Loading analysis...</p>}>
-                        <Analytics expenses={visibleExpenses} members={state.members} balances={balances} />
+                        <Analytics expenses={periodExpenses} members={state.members} balances={balances} />
                       </Suspense>
                       <div className="space-y-6">
                         <AccountAnalysis
@@ -409,10 +409,14 @@ export default function App() {
                     members={state.members}
                     totalExpense={totalExpense}
                     periodMode={periodMode}
+                    periodKey={periodKey}
+                    settlementMode={settlementMode}
                     budgetLimit={budgetLimit}
                     saving={saving}
-                    onPartial={(from, to, amount) => runAction(() => state.markSettlementPartial(from, to, amount))}
-                    onSettle={(from, to) => runAction(() => state.markSettlementSettled(from, to))}
+                    settlementHistory={groupActivityLogs.filter((log) => log.entity === 'settlement')}
+                    onSettlementModeChange={setSettlementMode}
+                    onPartial={(from, to, amount) => runAction(() => state.markSettlementPartial(from, to, amount, periodKey))}
+                    onSettle={(from, to, amount) => runAction(() => state.markSettlementSettled(from, to, amount, periodKey))}
                     onHistory={() => setDrawerOpen(true)}
                   />
                 )}
@@ -432,6 +436,8 @@ export default function App() {
                 {activeTab === 'categories' && (
                   <CategoriesScreen
                     categoryTotals={categoryTotals}
+                    expenses={periodExpenses}
+                    members={state.members}
                     expenseCategories={state.expenseCategories}
                     newCategoryName={newCategoryName}
                     onNewCategoryName={setNewCategoryName}
@@ -445,6 +451,20 @@ export default function App() {
                     }
                     onCategoryClick={filterByCategory}
                     onAddExpense={() => openEntry()}
+                  />
+                )}
+
+                {activeTab === 'reports' && (
+                  <ReportsScreen
+                    expenses={periodExpenses}
+                    members={activeMembers}
+                    periodMode={periodMode}
+                    periodLabel={formatPeriodLabel(periodMode, periodAnchor)}
+                    reportType={reportType}
+                    selectedMemberId={reportMemberId}
+                    onPeriodModeChange={changePeriodMode}
+                    onReportTypeChange={setReportType}
+                    onMemberChange={setReportMemberId}
                   />
                 )}
               </section>
@@ -520,109 +540,6 @@ export default function App() {
   );
 }
 
-function AppHeader({
-  groupName, totalExpense, periodMode, periodLabel, searchOpen, searchTerm, categoryFilter,
-  periodFilterOpen, activeGroupId, groups, onGroupChange,
-  onPrevPeriod, onNextPeriod, onToggleSearch, onSearchChange, onClearCategoryFilter,
-  onPeriodModeChange, onTogglePeriodFilter, onClosePeriodFilter,
-  onMenu, showGroupSelect = true, apiConnected = false
-}: {
-  groupName: string; totalExpense: number; periodMode: PeriodMode; periodLabel: string;
-  searchOpen: boolean; searchTerm: string; categoryFilter: string | null; periodFilterOpen: boolean;
-  activeGroupId: string; groups: { id: string; name: string }[]; onGroupChange: (id: string) => void;
-  onPrevPeriod: () => void; onNextPeriod: () => void; onToggleSearch: () => void;
-  onSearchChange: (v: string) => void; onClearCategoryFilter: () => void;
-  onPeriodModeChange: (mode: PeriodMode) => void; onTogglePeriodFilter: () => void; onClosePeriodFilter: () => void;
-  onMenu: () => void; showGroupSelect?: boolean; apiConnected?: boolean;
-}) {
-  const modeLabel = periodMode.charAt(0).toUpperCase() + periodMode.slice(1);
-
-  return (
-    <header className="bg-[#56564f] px-4 pb-4 pt-5 shadow-lg sm:px-6 sm:pb-5 sm:pt-8 lg:rounded-b-2xl lg:px-8">
-      {apiConnected && (
-        <p className="mb-3 flex items-center gap-2 text-xs text-[#86d28e] lg:hidden">
-          <span className="size-2 rounded-full bg-[#86d28e]" />
-          MongoDB connected
-        </p>
-      )}
-      <div className="mb-5 flex items-center justify-between gap-3 sm:mb-6">
-        <button className="text-[#f5ff8f] lg:hidden" aria-label="Menu" onClick={onMenu}>
-          <Menu size={34} />
-        </button>
-        <div className="flex flex-1 items-center justify-center gap-3 lg:justify-start">
-          <span className="font-serif text-[clamp(1.85rem,8vw,2.5rem)] font-bold italic leading-tight text-[#f5ff8f] lg:hidden">SplitNest</span>
-          {showGroupSelect && (
-            <select
-              className="max-w-36 bg-transparent text-xs text-[#d8d4b4] outline-none sm:max-w-44 sm:text-sm lg:hidden"
-              value={activeGroupId}
-              onChange={(event) => onGroupChange(event.target.value)}
-              aria-label="Group"
-            >
-              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-            </select>
-          )}
-          <span className="hidden text-2xl font-semibold text-[#fff9bf] lg:inline">{groupName}</span>
-        </div>
-        <button className="text-[#fff9bf]" onClick={onToggleSearch} aria-label="Search">
-          <Search size={32} />
-        </button>
-      </div>
-
-      {searchOpen && (
-        <div className="mb-5 flex items-center gap-2 rounded-lg border-2 border-[#b8b493] px-3 py-2">
-          <Search size={22} />
-          <input
-            className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-[#d8d4b4]"
-            placeholder="Search records, accounts, notes"
-            value={searchTerm}
-            onChange={(event) => onSearchChange(event.target.value)}
-          />
-          <button onClick={() => onSearchChange('')} aria-label="Clear search"><X size={22} /></button>
-        </div>
-      )}
-
-      {categoryFilter && (
-        <div className="mb-4 flex items-center gap-2">
-          <span className="rounded-lg border-2 border-[#fff27c] px-3 py-1 text-sm">Filter: {categoryFilter}</span>
-          <button className="my-btn px-3 py-1 text-sm" onClick={onClearCategoryFilter}>Clear</button>
-        </div>
-      )}
-
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <span className="rounded-lg border border-[#6f6d5a] px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[#b8b493]">
-          {modeLabel} view · Mon–Sun weeks
-        </span>
-      </div>
-
-      <div className="mb-6 grid grid-cols-[36px_1fr_36px_36px] items-center gap-1 text-center sm:grid-cols-[48px_1fr_48px_48px] sm:gap-2 lg:max-w-2xl">
-        <button onClick={onPrevPeriod} aria-label="Previous period"><ChevronLeft className="mx-auto text-[#fff9bf]" size={34} /></button>
-        <p className="truncate text-[clamp(1.25rem,5.5vw,1.75rem)] font-semibold">{periodLabel}</p>
-        <button onClick={onNextPeriod} aria-label="Next period"><ChevronRight className="mx-auto text-[#fff9bf]" size={34} /></button>
-        <PeriodFilter
-          mode={periodMode}
-          onChange={onPeriodModeChange}
-          open={periodFilterOpen}
-          onToggle={onTogglePeriodFilter}
-          onClose={onClosePeriodFilter}
-        />
-      </div>
-
-      <div className="grid max-w-md grid-cols-1 gap-4 text-center lg:max-w-sm">
-        <SummaryMetric label="TOTAL EXPENSE" value={totalExpense} />
-      </div>
-    </header>
-  );
-}
-
-function SummaryMetric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-xl border border-[#6f6d5a] bg-[#48483f]/50 p-3 lg:p-4">
-      <p className="text-[clamp(0.85rem,3.5vw,1rem)] font-bold tracking-wide text-[#fff9bf] lg:text-sm">{label}</p>
-      <p className="mt-1 text-[clamp(1.35rem,6vw,1.875rem)] font-semibold text-[#ff8667]">{currency.format(value)}</p>
-    </div>
-  );
-}
-
 function AccountAnalysis({
   balances,
   members,
@@ -670,31 +587,47 @@ function AccountAnalysis({
 }
 
 function BudgetSettlements({
-  settlements, balances, members, totalExpense, periodMode, budgetLimit, saving, onSettle, onPartial, onHistory
+  settlements, balances, members, totalExpense, periodMode, periodKey, settlementMode, saving,
+  onSettlementModeChange, onSettle, onPartial, onHistory, settlementHistory
 }: {
   settlements: ReturnType<typeof selectSettlementsForExpenses>;
   balances: ReturnType<typeof selectBalancesForExpenses>;
   members: ReturnType<typeof useSplitNestStore.getState>['members'];
-  totalExpense: number; periodMode: PeriodMode; budgetLimit: number; saving: boolean;
-  onSettle: (from: string, to: string) => void; onPartial: (from: string, to: string, amount: number) => void; onHistory: () => void;
+  totalExpense: number; periodMode: PeriodMode; periodKey: string; budgetLimit: number; saving: boolean;
+  settlementMode: SettlementMode; onSettlementModeChange: (mode: SettlementMode) => void;
+  onSettle: (from: string, to: string, amount: number) => void; onPartial: (from: string, to: string, amount: number) => void; onHistory: () => void;
+  settlementHistory: ReturnType<typeof useSplitNestStore.getState>['activityLogs'];
 }) {
+  const currentPeriodHistory = settlementHistory.filter((log) => log.action.includes(periodKey));
+
   return (
     <section className="space-y-6 lg:max-w-3xl">
       <SettlementSummary balances={balances} members={members} periodMode={periodMode} totalExpense={totalExpense} />
-      <SettlementPlan
-        balances={balances}
-        settlements={settlements}
-        members={members}
-        totalExpense={totalExpense}
-        memberCount={members.length}
-      />
-      <MyMoneyTitle>SETTLE UP</MyMoneyTitle>
-      <div className="rounded-xl border-2 border-[#b8b493] p-5">
-        <p className="text-2xl font-semibold">Group budget</p>
-        <div className="mt-4 h-4 rounded-full border-2 border-[#fff9bf]">
-          <div className="h-full rounded-full bg-[#ff6b45] transition-all" style={{ width: `${Math.min((totalExpense / budgetLimit) * 100, 100)}%` }} />
+      <MyMoneyTitle>SETTLEMENT DETAILS</MyMoneyTitle>
+      <div className="rounded-xl border-2 border-[#8f8c72] bg-[#48483f] p-4">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            className={`rounded-lg border-2 px-3 py-3 text-sm font-semibold transition ${
+              settlementMode === 'relationship' ? 'border-[#fff27c] bg-[#fff27c]/10 text-[#fff27c]' : 'border-[#6f6d5a] text-[#d8d4b4]'
+            }`}
+            onClick={() => onSettlementModeChange('relationship')}
+          >
+            Relationship
+          </button>
+          <button
+            className={`rounded-lg border-2 px-3 py-3 text-sm font-semibold transition ${
+              settlementMode === 'simplified' ? 'border-[#fff27c] bg-[#fff27c]/10 text-[#fff27c]' : 'border-[#6f6d5a] text-[#d8d4b4]'
+            }`}
+            onClick={() => onSettlementModeChange('simplified')}
+          >
+            Optimized
+          </button>
         </div>
-        <p className="mt-3 text-xl text-[#d8d4b4]">{currency.format(totalExpense)} used from {currency.format(budgetLimit)}</p>
+        <p className="mt-3 text-sm text-[#d8d4b4]">
+          {settlementMode === 'relationship'
+            ? 'Shows direct payback based on who paid for whose share. Best for discussion and clarity.'
+            : 'Combines balances into the fewest transfers after everyone agrees to simplify payments.'}
+        </p>
       </div>
       <div className="space-y-4">
         {settlements.length === 0 && <p className="text-2xl">Everyone is settled.</p>}
@@ -705,13 +638,25 @@ function BudgetSettlements({
             </p>
             <p className="my-3 text-[clamp(1.8rem,8vw,2.25rem)] font-semibold text-[#ff8667]">{currency.format(settlement.amount)}</p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:text-sm">
-              <button className="my-btn" disabled={saving} onClick={() => onSettle(settlement.from, settlement.to)}>SETTLED</button>
+              <button className="my-btn" disabled={saving} onClick={() => onSettle(settlement.from, settlement.to, settlement.amount)}>SETTLED</button>
               <button className="my-btn" disabled={saving} onClick={() => onPartial(settlement.from, settlement.to, Math.round((settlement.amount / 2) * 100) / 100)}>PARTIAL (50%)</button>
               <button className="my-btn" onClick={onHistory}>HISTORY</button>
             </div>
           </article>
         ))}
       </div>
+      {currentPeriodHistory.length > 0 && (
+        <div className="rounded-xl border-2 border-[#8f8c72] bg-[#48483f] p-5">
+          <h3 className="mb-4 text-2xl font-semibold">Settlement History</h3>
+          <div className="space-y-3">
+            {currentPeriodHistory.slice(0, 8).map((log) => (
+              <p key={log.id} className="border-b border-[#6f6d5a] pb-3 text-sm text-[#d8d4b4] last:border-b-0 last:pb-0">
+                <span className="font-semibold text-[#fff9bf]">{memberName(members, log.userId)}</span> {log.action.replace(` for ${periodKey}`, '')}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -803,9 +748,10 @@ function AccountsScreen({ balances, members, activeMemberIds, isAdmin, currentUs
 }
 
 function CategoriesScreen({
-  categoryTotals, expenseCategories, newCategoryName, onNewCategoryName, onAddCategory, onCategoryClick, onAddExpense
+  categoryTotals, expenses, members, expenseCategories, newCategoryName, onNewCategoryName, onAddCategory, onCategoryClick, onAddExpense
 }: {
-  categoryTotals: { category: Category; amount: number }[]; expenseCategories: string[];
+  categoryTotals: { category: Category; amount: number }[]; expenses: Expense[];
+  members: ReturnType<typeof useSplitNestStore.getState>['members']; expenseCategories: string[];
   newCategoryName: string; onNewCategoryName: (v: string) => void; onAddCategory: () => void;
   onCategoryClick: (category: string) => void; onAddExpense: () => void;
 }) {
@@ -813,15 +759,78 @@ function CategoriesScreen({
     category,
     amount: categoryTotals.find((item) => item.category === category)?.amount ?? 0
   }));
+  const keyCategoryCards = ['Food', 'Eggs', 'Milk']
+    .map((category) => ({
+      category,
+      amount: categoryTotals.find((item) => item.category.toLowerCase() === category.toLowerCase())?.amount ?? 0
+    }))
+    .filter((entry) => expenseCategories.some((category) => category.toLowerCase() === entry.category.toLowerCase()) || entry.amount > 0);
+  const categoryBreakdowns = categoriesWithTotals
+    .filter((entry) => entry.amount > 0)
+    .map((entry) => ({
+      ...entry,
+      people: members
+        .map((member) => ({
+          member,
+          amount: expenses
+            .filter((expense) => expense.category === entry.category && expense.paidBy === member.id)
+            .reduce((sum, expense) => sum + expense.amount, 0)
+        }))
+        .filter(({ amount }) => amount > 0)
+        .sort((a, b) => b.amount - a.amount)
+    }));
 
   return (
     <section className="space-y-8">
+      {keyCategoryCards.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          {keyCategoryCards.map((entry) => (
+            <div key={entry.category} className="rounded-lg border-2 border-[#8f8c72] bg-[#48483f] p-4">
+              <p className="text-sm font-semibold uppercase tracking-wide text-[#b8b493]">{entry.category}</p>
+              <p className="mt-2 text-2xl font-bold text-[#ff8667]">{currency.format(entry.amount)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {expenseCategories.length === 0 ? (
         <div className="rounded-xl border-2 border-[#b8b493] bg-[#48483f] p-6 text-center text-[#d8d4b4]">
           <p>No categories yet. Add your first category below to start tracking expenses.</p>
         </div>
       ) : (
-        <CategoryList title="Categories" items={expenseCategories} totals={categoriesWithTotals} onItemClick={onCategoryClick} />
+        <div>
+          <h2 className="border-b-2 border-[#8f8c72] pb-3 text-3xl font-bold">Category Analysis</h2>
+          <div className="mt-4 space-y-5">
+            {categoryBreakdowns.length === 0 && (
+              <p className="rounded-lg border-2 border-[#8f8c72] p-5 text-center text-xl text-[#d8d4b4]">
+                No category spending in this period.
+              </p>
+            )}
+            {categoryBreakdowns.map((entry) => (
+              <article key={entry.category} className="rounded-xl border-2 border-[#8f8c72] bg-[#48483f] p-4">
+                <button
+                  type="button"
+                  className="flex w-full items-start justify-between gap-4 text-left"
+                  onClick={() => onCategoryClick(entry.category)}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-2xl font-semibold">{entry.category}</p>
+                    <p className="mt-1 text-sm text-[#b8b493]">Tap to view matching records</p>
+                  </div>
+                  <p className="shrink-0 text-2xl font-bold text-[#ff8667]">{currency.format(entry.amount)}</p>
+                </button>
+                <div className="mt-4 divide-y divide-[#6f6d5a]">
+                  {entry.people.map(({ member, amount }) => (
+                    <div key={member.id} className="flex items-center justify-between gap-4 py-3">
+                      <p className="min-w-0 truncate font-semibold text-[#fff9bf]">{member.name}</p>
+                      <p className="shrink-0 font-semibold text-[#86d28e]">{currency.format(amount)}</p>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
       )}
       <div className="grid gap-3 rounded-xl border-2 border-[#8f8c72] p-4">
         <input className="my-input" placeholder="New category name" value={newCategoryName} onChange={(event) => onNewCategoryName(event.target.value)} />
@@ -928,9 +937,381 @@ function CategoryList({ title, items, totals, onItemClick }: {
   );
 }
 
+function ReportsScreen({
+  expenses,
+  members,
+  periodMode,
+  periodLabel,
+  reportType,
+  selectedMemberId,
+  onPeriodModeChange,
+  onReportTypeChange,
+  onMemberChange
+}: {
+  expenses: Expense[];
+  members: ReturnType<typeof useSplitNestStore.getState>['members'];
+  periodMode: PeriodMode;
+  periodLabel: string;
+  reportType: 'group' | 'individual';
+  selectedMemberId: string;
+  onPeriodModeChange: (mode: PeriodMode) => void;
+  onReportTypeChange: (type: 'group' | 'individual') => void;
+  onMemberChange: (memberId: string) => void;
+}) {
+  const [generated, setGenerated] = useState(false);
+  const reportExpenses = useMemo(
+    () =>
+      (reportType === 'individual'
+        ? expenses.filter((expense) => expense.paidBy === selectedMemberId)
+        : expenses
+      ).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+    [expenses, reportType, selectedMemberId]
+  );
+  const total = reportExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const categoryRows = Object.entries(
+    reportExpenses.reduce<Record<string, { amount: number; count: number }>>((acc, expense) => {
+      const current = acc[expense.category] ?? { amount: 0, count: 0 };
+      acc[expense.category] = { amount: current.amount + expense.amount, count: current.count + 1 };
+      return acc;
+    }, {})
+  )
+    .map(([category, data]) => ({
+      category,
+      count: data.count,
+      amount: data.amount,
+      percent: total ? (data.amount / total) * 100 : 0
+    }))
+    .sort((a, b) => b.amount - a.amount);
+  const personRows = members
+    .map((member) => {
+      const memberExpenses = reportExpenses.filter((expense) => expense.paidBy === member.id);
+      const amount = memberExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+      return {
+        member,
+        amount,
+        count: memberExpenses.length,
+        percent: total ? (amount / total) * 100 : 0
+      };
+    })
+    .filter((row) => row.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  const highestCategory = categoryRows[0]?.category ?? 'None';
+  const generatedAt = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+  const selectedMemberName = memberName(members, selectedMemberId);
+
+  const ensureGenerated = () => setGenerated(true);
+  const downloadCsv = () => {
+    ensureGenerated();
+    const rows = [
+      ['Date', 'Person Name', 'Category', 'Expense Description', 'Amount', 'Notes'],
+      ...reportExpenses.map((expense) => [
+        expense.date,
+        memberName(members, expense.paidBy),
+        expense.category,
+        expense.title || expense.description || expense.category,
+        String(expense.amount),
+        expense.notes ?? ''
+      ])
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `splitnest-${reportType}-report-${periodLabel.replace(/\s+/g, '-').toLowerCase()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  const downloadPdf = () => {
+    ensureGenerated();
+    const html = buildReportHtml({
+      reportType,
+      periodLabel,
+      generatedAt,
+      selectedMemberName,
+      total,
+      transactionCount: reportExpenses.length,
+      categoryRows,
+      personRows,
+      highestCategory,
+      expenses: reportExpenses,
+      members
+    });
+    printReportHtml(html);
+  };
+
+  return (
+    <section className="space-y-6">
+      <MyMoneyTitle>REPORTS</MyMoneyTitle>
+      <div className="grid gap-4 rounded-xl border-2 border-[#8f8c72] bg-[#48483f] p-5 lg:grid-cols-2">
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-[#b8b493]">Report Period</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['weekly', 'monthly'] as PeriodMode[]).map((mode) => (
+              <button
+                key={mode}
+                className={`rounded-lg border-2 px-4 py-3 font-semibold capitalize ${
+                  periodMode === mode ? 'border-[#fff27c] bg-[#fff27c]/10 text-[#fff27c]' : 'border-[#6f6d5a] text-[#d8d4b4]'
+                }`}
+                onClick={() => onPeriodModeChange(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-sm text-[#d8d4b4]">Selected range: {periodLabel}</p>
+        </div>
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-[#b8b493]">Report Type</label>
+          <select
+            className="my-input w-full"
+            value={reportType}
+            onChange={(event) => onReportTypeChange(event.target.value as 'group' | 'individual')}
+          >
+            <option value="group">Group</option>
+            <option value="individual">Individual</option>
+          </select>
+        </div>
+        {reportType === 'individual' && (
+          <div>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-[#b8b493]">Person</label>
+            <select className="my-input w-full" value={selectedMemberId} onChange={(event) => onMemberChange(event.target.value)}>
+              {members.map((member) => (
+                <option key={member.id} value={member.id}>{member.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className="grid gap-2 sm:grid-cols-3 lg:col-span-2">
+          <button className="my-btn flex items-center justify-center gap-2 py-3" onClick={ensureGenerated}>
+            <FileText size={20} /> GENERATE
+          </button>
+          <button className="my-btn flex items-center justify-center gap-2 py-3" onClick={downloadPdf}>
+            <Download size={20} /> PDF
+          </button>
+          <button className="my-btn flex items-center justify-center gap-2 py-3" onClick={downloadCsv}>
+            <Download size={20} /> EXCEL
+          </button>
+        </div>
+      </div>
+
+      {generated && (
+        <div className="space-y-5 rounded-xl border-2 border-[#b8b493] bg-[#48483f] p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#8f8c72] pb-4">
+            <div>
+              <p className="font-serif text-3xl font-bold italic text-[#f5ff8f]">SplitNest</p>
+              <p className="mt-1 text-xl font-semibold">Expense Report</p>
+              <p className="text-sm text-[#d8d4b4]">{reportType === 'group' ? 'Group' : `Individual: ${selectedMemberName}`} · {periodLabel}</p>
+            </div>
+            <p className="text-sm text-[#b8b493]">Generated {generatedAt}</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <ReportMetric label="Total Expenses" value={currency.format(total)} />
+            <ReportMetric label="Transactions" value={String(reportExpenses.length)} />
+            <ReportMetric label="Categories" value={String(categoryRows.length)} />
+            <ReportMetric label="Top Category" value={highestCategory} />
+            <ReportMetric label="Average" value={currency.format(reportExpenses.length ? total / reportExpenses.length : 0)} />
+          </div>
+          <ReportTable
+            title="Category-wise Summary"
+            headers={['Category', 'Transactions', 'Amount', 'Share']}
+            rows={categoryRows.map((row) => [row.category, String(row.count), currency.format(row.amount), `${row.percent.toFixed(1)}%`])}
+          />
+          {reportType === 'group' && (
+            <ReportTable
+              title="Person-wise Summary"
+              headers={['Person', 'Transactions', 'Amount', 'Contribution']}
+              rows={personRows.map((row) => [row.member.name, String(row.count), currency.format(row.amount), `${row.percent.toFixed(1)}%`])}
+            />
+          )}
+          <ReportTable
+            title="Detailed Expense Records"
+            headers={['Date', 'Person', 'Category', 'Description', 'Amount', 'Notes']}
+            rows={reportExpenses.map((expense) => [
+              expense.date,
+              memberName(members, expense.paidBy),
+              expense.category,
+              expense.title || expense.description || expense.category,
+              currency.format(expense.amount),
+              expense.notes ?? '-'
+            ])}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReportMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[#6f6d5a] p-3">
+      <p className="text-xs font-bold uppercase tracking-wide text-[#b8b493]">{label}</p>
+      <p className="mt-2 break-words text-xl font-semibold text-[#fff9bf]">{value}</p>
+    </div>
+  );
+}
+
+function ReportTable({ title, headers, rows }: { title: string; headers: string[]; rows: string[][] }) {
+  return (
+    <div>
+      <h3 className="mb-3 text-2xl font-semibold">{title}</h3>
+      <div className="overflow-x-auto rounded-lg border border-[#8f8c72]">
+        <table className="min-w-full divide-y divide-[#8f8c72] text-sm">
+          <thead className="bg-[#56564f]">
+            <tr>{headers.map((header) => <th key={header} className="px-3 py-3 text-left font-semibold">{header}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-[#6f6d5a]">
+            {rows.length === 0 ? (
+              <tr><td className="px-3 py-4 text-center text-[#d8d4b4]" colSpan={headers.length}>No data for this period.</td></tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-3 text-[#d8d4b4]">{cell}</td>)}</tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char] ?? char));
+}
+
+function buildReportHtml({
+  reportType,
+  periodLabel,
+  generatedAt,
+  selectedMemberName,
+  total,
+  transactionCount,
+  categoryRows,
+  personRows,
+  highestCategory,
+  expenses,
+  members
+}: {
+  reportType: 'group' | 'individual';
+  periodLabel: string;
+  generatedAt: string;
+  selectedMemberName: string;
+  total: number;
+  transactionCount: number;
+  categoryRows: { category: string; count: number; amount: number; percent: number }[];
+  personRows: { member: { name: string }; amount: number; count: number; percent: number }[];
+  highestCategory: string;
+  expenses: Expense[];
+  members: ReturnType<typeof useSplitNestStore.getState>['members'];
+}) {
+  const rowHtml = (cells: string[]) => `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`;
+  const tableHtml = (title: string, headers: string[], rows: string[][]) => `
+    <section>
+      <h2>${escapeHtml(title)}</h2>
+      <table>
+        <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
+        <tbody>${rows.length ? rows.map(rowHtml).join('') : `<tr><td colspan="${headers.length}">No data for this period.</td></tr>`}</tbody>
+      </table>
+    </section>`;
+
+  return `<!doctype html>
+<html>
+<head>
+  <title>SplitNest Expense Report</title>
+  <style>
+    @page { margin: 18mm; @bottom-center { content: "SplitNest · Page " counter(page); } }
+    body { color: #1f2933; font-family: Arial, sans-serif; margin: 0; }
+    header { border-bottom: 3px solid #2f3a45; margin-bottom: 24px; padding-bottom: 18px; }
+    .brand { color: #2f3a45; font-size: 30px; font-style: italic; font-weight: 700; }
+    .meta { color: #52606d; margin-top: 6px; }
+    .summary { display: grid; gap: 12px; grid-template-columns: repeat(5, 1fr); margin: 18px 0 24px; }
+    .card { border: 1px solid #d9e2ec; border-radius: 8px; padding: 12px; }
+    .label { color: #627d98; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .value { font-size: 18px; font-weight: 700; margin-top: 8px; }
+    h1 { font-size: 24px; margin: 8px 0 0; }
+    h2 { border-bottom: 1px solid #d9e2ec; font-size: 18px; margin: 24px 0 10px; padding-bottom: 8px; }
+    table { border-collapse: collapse; font-size: 12px; margin-bottom: 12px; width: 100%; }
+    th { background: #f0f4f8; color: #243b53; text-align: left; }
+    th, td { border: 1px solid #d9e2ec; padding: 8px; vertical-align: top; }
+    footer { border-top: 1px solid #d9e2ec; color: #627d98; display: flex; justify-content: space-between; margin-top: 28px; padding-top: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">SplitNest</div>
+    <h1>Expense Report</h1>
+    <div class="meta">${escapeHtml(reportType === 'group' ? 'Group Report' : `Individual Report · ${selectedMemberName}`)}</div>
+    <div class="meta">Period: ${escapeHtml(periodLabel)} · Generated: ${escapeHtml(generatedAt)}</div>
+  </header>
+  <section class="summary">
+    <div class="card"><div class="label">Total Expenses</div><div class="value">${currency.format(total)}</div></div>
+    <div class="card"><div class="label">Transactions</div><div class="value">${transactionCount}</div></div>
+    <div class="card"><div class="label">Categories</div><div class="value">${categoryRows.length}</div></div>
+    <div class="card"><div class="label">Top Category</div><div class="value">${escapeHtml(highestCategory)}</div></div>
+    <div class="card"><div class="label">Average</div><div class="value">${currency.format(transactionCount ? total / transactionCount : 0)}</div></div>
+  </section>
+  ${tableHtml('Category-wise Summary', ['Category', 'Transactions', 'Amount', 'Share'], categoryRows.map((row) => [row.category, String(row.count), currency.format(row.amount), `${row.percent.toFixed(1)}%`]))}
+  ${reportType === 'group' ? tableHtml('Person-wise Summary', ['Person', 'Transactions', 'Amount', 'Contribution'], personRows.map((row) => [row.member.name, String(row.count), currency.format(row.amount), `${row.percent.toFixed(1)}%`])) : ''}
+  ${tableHtml('Detailed Expense Records', ['Date', 'Person', 'Category', 'Description', 'Amount', 'Notes'], expenses.map((expense) => [
+    expense.date,
+    memberName(members, expense.paidBy),
+    expense.category,
+    expense.title || expense.description || expense.category,
+    currency.format(expense.amount),
+    expense.notes ?? '-'
+  ]))}
+  <footer><strong>Grand Total: ${currency.format(total)}</strong><span>${escapeHtml(generatedAt)} · SplitNest</span></footer>
+</body>
+</html>`;
+}
+
+function printReportHtml(html: string) {
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(iframe);
+
+  const removeFrame = () => {
+    setTimeout(() => iframe.remove(), 1000);
+  };
+  let printed = false;
+  const printFrame = () => {
+    if (printed) return;
+    printed = true;
+    iframe.contentWindow?.focus();
+    iframe.contentWindow?.print();
+    removeFrame();
+  };
+
+  const doc = iframe.contentDocument ?? iframe.contentWindow?.document;
+  if (!doc) {
+    iframe.remove();
+    return;
+  }
+
+  iframe.onload = () => setTimeout(printFrame, 150);
+  doc.open();
+  doc.write(html);
+  doc.close();
+  setTimeout(printFrame, 500);
+}
+
 function BottomNav({ activeTab, onChange }: { activeTab: Tab; onChange: (tab: Tab) => void }) {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto grid h-20 max-w-6xl grid-cols-5 bg-[#5a5a50] px-1 sm:h-24 sm:px-2 lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto grid h-20 max-w-6xl grid-cols-6 bg-[#5a5a50] px-1 sm:h-24 sm:px-2 lg:hidden">
       {navItems.map(({ tab, label, icon: Icon }) => {
         const active = activeTab === tab;
         return (

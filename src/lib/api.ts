@@ -37,7 +37,8 @@ export type BootstrapData = {
   groups: (import('./types').Group & { budgetLimit?: number })[];
   expenses: import('./types').Expense[];
   settledSettlementKeys: string[];
-  partialSettlements: { from: string; to: string; amount: number }[];
+  partialSettlements: { from: string; to: string; amount: number; periodKey: string }[];
+  settlementRecords: import('./types').SettlementRecord[];
   activityLogs: import('./types').ActivityLog[];
   notifications: import('./types').Notification[];
   expenseCategories: string[];
@@ -96,13 +97,13 @@ export const api = {
   duplicateExpense: (expenseId: string) =>
     request<{ expense: import('./types').Expense }>(`/expenses/${expenseId}/duplicate`, { method: 'POST' }),
   deleteExpense: (expenseId: string) => request<{ ok: boolean }>(`/expenses/${expenseId}`, { method: 'DELETE' }),
-  settle: (body: { groupId: string; from: string; to: string }) =>
+  settle: (body: { groupId: string; from: string; to: string; amount: number; periodKey: string }) =>
     request<{ settledKey: string; log: import('./types').ActivityLog; notification: import('./types').Notification }>(
       '/settlements/settle',
       { method: 'POST', body: JSON.stringify(body) }
     ),
-  partialSettle: (body: { groupId: string; from: string; to: string; amount: number }) =>
-    request<{ partial: { from: string; to: string; amount: number }; log: import('./types').ActivityLog; notification: import('./types').Notification }>(
+  partialSettle: (body: { groupId: string; from: string; to: string; amount: number; periodKey: string }) =>
+    request<{ partial: import('./types').SettlementRecord; log: import('./types').ActivityLog; notification: import('./types').Notification }>(
       '/settlements/partial',
       { method: 'POST', body: JSON.stringify(body) }
     ),

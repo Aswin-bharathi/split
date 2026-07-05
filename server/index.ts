@@ -1,11 +1,8 @@
 // server/index.ts
 import 'dotenv/config';
-import express from 'express';
-import cors from 'cors';
 import { connectDb } from './db.js';
 import { seedDatabase } from './seed.js';
-import { apiRouter } from './routes/api.js';
-import { authRouter } from './routes/auth.js';
+import { createApp } from './app.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/splitnest';
@@ -17,17 +14,7 @@ async function start() {
     await seedDatabase();
   }
 
-  const app = express();
-  app.use(
-    cors({
-      origin: 'https://splitn.netlify.app',
-      credentials: true
-    })
-  );
-  app.use(express.json());
-
-  app.use('/api/auth', authRouter);
-  app.use('/api', apiRouter);
+  const app = createApp();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`SplitNest API running on http://localhost:${PORT}`);

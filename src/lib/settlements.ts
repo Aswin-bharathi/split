@@ -1,4 +1,4 @@
-import type { Balance, Expense, ParticipantInput, ParticipantShare, Settlement } from './types';
+import type { Balance, Expense, ParticipantInput, ParticipantShare, Settlement, SettlementRecord } from './types';
 
 export const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -104,6 +104,125 @@ export function simplifyDebts(balances: Balance[]): Settlement[] {
 }
 
 export const calculateSettlement = (expenses: Expense[], memberIds: string[]) => simplifyDebts(calculateBalances(expenses, memberIds));
+
+export function calculateRelationshipSettlements(expenses: Expense[]): Settlement[] {
+  const ledger = new Map<string, number>();
+  const addDebt = (from: string, to: string, amount: number) => {
+    if (from === to || amount <= 0) return;
+    const key = `${from}->${to}`;
+    ledger.set(key, roundMoney((ledger.get(key) ?? 0) + amount));
+  };
+
+  expenses.forEach((expense) => {
+    expense.participants.forEach((participant) => {
+      addDebt(participant.memberId, expense.paidBy, participant.share);
+    });
+  });
+
+  return netSettlementLedger(ledger);
+}
+
+export function applySettlementRecordsToRelationships(
+  settlements: Settlement[],
+  records: Pick<SettlementRecord, 'from' | 'to' | 'amount'>[]
+): Settlement[] {
+  const ledger = new Map<string, number>();
+  settlements.forEach((settlement) => {
+    ledger.set(`${settlement.from}->${settlement.to}`, settlement.amount);
+  });
+  records.forEach((record) => {
+    applyPaymentToRelationshipLedger(ledger, record.from, record.to, record.amount);
+  });
+  return netSettlementLedger(ledger);
+}
+
+function applyPaymentToRelationshipLedger(ledger: Map<string, number>, from: string, to: string, amount: number) {
+  let remaining = amount;
+  const exactKey = `${from}->${to}`;
+  const exactAmount = ledger.get(exactKey) ?? 0;
+  if (exactAmount > 0) {
+    const paid = Math.min(exactAmount, remaining);
+    ledger.set(exactKey, roundMoney(exactAmount - paid));
+    remaining = roundMoney(remaining - paid);
+  }
+  if (remaining <= 0.009) return;
+
+  const afterOutgoing = reduceLedgerEdges(
+    ledger,
+    (debtFrom) => debtFrom === from,
+    remaining
+  );
+  const paidFromOutgoing = roundMoney(remaining - afterOutgoing);
+  if (paidFromOutgoing <= 0.009) return;
+
+  reduceLedgerEdges(
+    ledger,
+    (_debtFrom, debtTo) => debtTo === to,
+    paidFromOutgoing
+  );
+}
+
+function reduceLedgerEdges(
+  ledger: Map<string, number>,
+  matches: (from: string, to: string) => boolean,
+  amount: number
+) {
+  let remaining = amount;
+  [...ledger.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([key, current]) => {
+      if (remaining <= 0.009 || current <= 0) return;
+      const [from, to] = key.split('->');
+      if (!matches(from, to)) return;
+      const paid = Math.min(current, remaining);
+      ledger.set(key, roundMoney(current - paid));
+      remaining = roundMoney(remaining - paid);
+    });
+  return remaining;
+}
+
+function netSettlementLedger(ledger: Map<string, number>): Settlement[] {
+  const pairs = new Set<string>();
+  ledger.forEach((_amount, key) => {
+    const [from, to] = key.split('->');
+    pairs.add([from, to].sort().join('::'));
+  });
+
+  const settlements: Settlement[] = [];
+  pairs.forEach((pair) => {
+    const [a, b] = pair.split('::');
+    const aToB = ledger.get(`${a}->${b}`) ?? 0;
+    const bToA = ledger.get(`${b}->${a}`) ?? 0;
+    const net = roundMoney(aToB - bToA);
+    if (net > 0.009) settlements.push({ from: a, to: b, amount: net, status: 'pending' });
+    if (net < -0.009) settlements.push({ from: b, to: a, amount: Math.abs(net), status: 'pending' });
+  });
+
+  return settlements.sort((a, b) => {
+    if (a.from !== b.from) return a.from.localeCompare(b.from);
+    return a.to.localeCompare(b.to);
+  });
+}
+
+export function applySettlementRecordsToBalances(
+  balances: Balance[],
+  records: Pick<SettlementRecord, 'from' | 'to' | 'amount'>[]
+): Balance[] {
+  if (!records.length) return balances;
+  return balances.map((balance) => {
+    const paidOut = records
+      .filter((record) => record.from === balance.memberId)
+      .reduce((sum, record) => sum + record.amount, 0);
+    const received = records
+      .filter((record) => record.to === balance.memberId)
+      .reduce((sum, record) => sum + record.amount, 0);
+    const adjustedBalance = roundMoney(balance.balance + paidOut - received);
+    return {
+      ...balance,
+      balance: adjustedBalance
+    };
+  });
+}
 
 export function applyPartialSettlements(
   settlements: Settlement[],

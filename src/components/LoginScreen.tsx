@@ -49,7 +49,7 @@ export function LoginScreen({ onLogin, loading = false, error }: LoginScreenProp
             <input
               type="text"
               className="my-input w-full"
-              placeholder="e.g. hariprasath or admin"
+              placeholder="e.g. hariprasath or sivasakthi"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
