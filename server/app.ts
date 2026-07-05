@@ -7,6 +7,7 @@ export const getCorsOrigins = () =>
   [
     "http://localhost:5173",
     "http://localhost:5174",
+    "https://splitns.netlify.app",
     "https://splitnests.netlify.app",
     "https://splitnest.netlify.app",
     ...(process.env.CORS_ORIGIN ?? "").split(",")
