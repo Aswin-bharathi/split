@@ -4,12 +4,16 @@ import { apiRouter } from "./routes/api.js";
 import { authRouter } from "./routes/auth.js";
 
 export const getCorsOrigins = () =>
-  (
-    process.env.CORS_ORIGIN ??
-    "http://localhost:5173,http://localhost:5174,https://splitnests.netlify.app"
-  )
-    .split(",")
-    .map((o) => o.trim());
+  [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://splitnests.netlify.app",
+    "https://splitnest.netlify.app",
+    ...(process.env.CORS_ORIGIN ?? "").split(",")
+  ]
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .filter((origin, index, origins) => origins.indexOf(origin) === index);
 
 export function createApp() {
   const app = express();
