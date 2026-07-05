@@ -34,7 +34,7 @@ authRouter.post('/login', async (req, res) => {
       return;
     }
 
-    const token = jwt.sign({ userId: member.id }, SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: member.id }, SECRET, { expiresIn: '30d' });
 
     res.json({
       token,
