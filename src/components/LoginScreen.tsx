@@ -92,7 +92,7 @@ export function LoginScreen({ onLogin, loading = false, error }: LoginScreenProp
         </form>
 
         <p className="mt-6 text-center text-xs text-[#b8b493]">
-          Your session stays active for 7 days. You will be asked to sign in again when it expires.
+          Your session stays active for 30 days. You will be asked to sign in again when it expires.
         </p>
       </div>
     </div>
