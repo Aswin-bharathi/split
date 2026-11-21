@@ -29,7 +29,7 @@ type ExpenseFormProps = {
 
 const blankValues = (members: Member[]) =>
   members.reduce<Record<string, string>>((acc, member, index) => {
-    acc[member.id] = index === 0 ? '4' : '2';
+    acc[member.id] = index === 0 ? '1' : '1';
     return acc;
   }, {});
 
